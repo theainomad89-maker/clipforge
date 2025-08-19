@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase';
 
 export async function GET(_: Request, { params }: { params: { jobId: string } }) {
-  const { jobId } = params;
+  const { jobId } = await params;
   const { data: job, error: jerr } = await supabaseAdmin
     .from('jobs')
     .select('*')

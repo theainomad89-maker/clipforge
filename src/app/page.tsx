@@ -17,7 +17,7 @@ export default function Home() {
 
   const [clips, setClips] = useState<Clip[]>([]);
   const [busy, setBusy] = useState(false);
-  const FREE_LIMIT = 2;
+  const FREE_LIMIT = 999; // Temporarily disabled for testing
   const [runsUsed, setRunsUsed] = useState<number>(0);
   const [showPaywall, setShowPaywall] = useState(false);
 
@@ -60,10 +60,38 @@ export default function Home() {
     setPlatform(null);
     setJobStatus('idle');
 
-    // 1) get signed upload url
-    const res = await fetch('/api/upload-url', { method: 'POST' });
-    const js = await res.json();
-    if (!res.ok) { alert(js.error || 'upload url error'); return; }
+    // 1) get signed upload url with retry
+    let res, js;
+    let retries = 0;
+    const maxRetries = 3;
+    
+    while (retries < maxRetries) {
+      try {
+        res = await fetch('/api/upload-url', { method: 'POST' });
+        js = await res.json();
+        
+        if (res.ok) {
+          break; // Success, exit retry loop
+        }
+        
+        retries++;
+        if (retries < maxRetries) {
+          console.log(`Retry ${retries}/${maxRetries} due to: ${js.error}`);
+          await new Promise(resolve => setTimeout(resolve, 1000 * retries)); // Exponential backoff
+        }
+      } catch (error) {
+        retries++;
+        if (retries < maxRetries) {
+          console.log(`Retry ${retries}/${maxRetries} due to network error`);
+          await new Promise(resolve => setTimeout(resolve, 1000 * retries));
+        }
+      }
+    }
+    
+    if (!res?.ok) {
+      alert(`Upload failed after ${maxRetries} retries: ${js?.error || 'Unknown error'}`);
+      return;
+    }
 
     setProjectId(js.projectId);
 
@@ -91,16 +119,48 @@ export default function Home() {
   const startServerProcess = async () => {
     if (!canGenerate || !platform || !duration || !projectId) return;
 
-    if (runsUsed >= FREE_LIMIT) { setShowPaywall(true); return; }
+    // Temporarily disabled paywall check for testing
+    // if (runsUsed >= FREE_LIMIT) { setShowPaywall(true); return; }
 
     setBusy(true);
-    const res = await fetch('/api/process', {
-      method: 'POST',
-      body: JSON.stringify({ projectId, platform }),
-      headers: { 'content-type': 'application/json' }
-    });
-    const js = await res.json();
-    if (!res.ok) { setBusy(false); alert(js.error || 'process error'); return; }
+    
+    // Process API call with retry
+    let res, js;
+    let retries = 0;
+    const maxRetries = 3;
+    
+    while (retries < maxRetries) {
+      try {
+        res = await fetch('/api/process', {
+          method: 'POST',
+          body: JSON.stringify({ projectId, platform }),
+          headers: { 'content-type': 'application/json' }
+        });
+        js = await res.json();
+        
+        if (res.ok) {
+          break; // Success, exit retry loop
+        }
+        
+        retries++;
+        if (retries < maxRetries) {
+          console.log(`Process retry ${retries}/${maxRetries} due to: ${js.error}`);
+          await new Promise(resolve => setTimeout(resolve, 1000 * retries));
+        }
+      } catch (error) {
+        retries++;
+        if (retries < maxRetries) {
+          console.log(`Process retry ${retries}/${maxRetries} due to network error`);
+          await new Promise(resolve => setTimeout(resolve, 1000 * retries));
+        }
+      }
+    }
+    
+    if (!res?.ok) {
+      setBusy(false);
+      alert(`Process failed after ${maxRetries} retries: ${js?.error || 'Unknown error'}`);
+      return;
+    }
 
     setJobId(js.jobId);
     setJobStatus('queued');
