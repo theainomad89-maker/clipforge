@@ -1,0 +1,13 @@
+# Ignore everything except worker files
+../src/
+../public/
+../.next/
+../node_modules/
+../package-lock.json
+../tsconfig.json
+../next.config.ts
+../postcss.config.mjs
+../eslint.config.mjs
+../README.md
+../.git/
+../.gitignore
