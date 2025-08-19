@@ -4,8 +4,10 @@ import ffmpeg from 'fluent-ffmpeg';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
-import { fileURLToPath } from 'url';
-import { tmpdir } from 'os';
+import { pipeline } from 'stream';
+import { promisify } from 'util';
+
+const streamPipeline = promisify(pipeline);
 
 // ENV
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -34,9 +36,10 @@ async function loop() {
     const sourcePath = job.projects.source_path; // videos bucket path
     // signed download URL for source
     const { data: signed } = await supa.storage.from('videos').createSignedUrl(sourcePath, 60*15);
-    const downloadUrl = signed.signedUrl;
+    const downloadUrl = signed?.signedUrl;
+    if (!downloadUrl) throw new Error('no signed download url');
 
-    // download to temp
+    // download to temp (stream)
     const srcFile = path.join(os.tmpdir(), `${job.id}-src.mp4`);
     await downloadFile(downloadUrl, srcFile);
 
@@ -106,9 +109,8 @@ async function sleep(ms){ return new Promise(r=>setTimeout(r,ms)); }
 
 async function downloadFile(url, dest) {
   const r = await fetch(url);
-  if (!r.ok) throw new Error('download failed');
-  const buf = Buffer.from(await r.arrayBuffer());
-  fs.writeFileSync(dest, buf);
+  if (!r.ok) throw new Error(`download failed: ${r.status}`);
+  await streamPipeline(r.body, fs.createWriteStream(dest));
 }
 
 async function ffprobe(file) {
@@ -174,11 +176,7 @@ function buildWindowedSRT(segments, start, end, outPath) {
     if (s.end < start || s.start > end) continue;
     const a = Math.max(0, s.start - start);
     const b = Math.min(end - start, s.end - start);
-    lines.push(`${idx++}
-${toTS(a)} --> ${toTS(b)}
-${(s.text||'').trim()}
-
-`);
+    lines.push(`${idx++}\n${toTS(a)} --> ${toTS(b)}\n${(s.text||'').trim()}\n\n`);
   }
   fs.writeFileSync(outPath, lines.join(''), 'utf8');
 }
@@ -195,10 +193,18 @@ function toTS(sec) {
 }
 
 async function renderClip(src, srt, out, { start, end, aspect }) {
+  try {
+    await renderClipWithSubtitles(src, srt, out, { start, end, aspect });
+  } catch (e) {
+    console.warn('render with subtitles failed, falling back:', e?.message || e);
+    await renderClipNoSubtitles(src, out, { start, end, aspect });
+  }
+}
+
+async function renderClipWithSubtitles(src, srt, out, { start, end, aspect }) {
   const dur = end - start;
   const scale = aspect === '1:1' ? 'scale=1080:1080:force_original_aspect_ratio=decrease,pad=1080:1080:(ow-iw)/2:(oh-ih)/2' :
                                    'scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2';
-
   const drawBar = `drawbox=x=0:y=ih-10:w=iw*t/${dur}:h=8:color=#F08640@0.85:t=fill`;
   const vf = `subtitles='${srt.replace(/\\/g,'/')}':force_style='Fontsize=28,PrimaryColour=&HFFFFFF&,OutlineColour=&H000000&,BorderStyle=3,Outline=2,Shadow=0',${scale},${drawBar}`;
 
@@ -207,6 +213,25 @@ async function renderClip(src, srt, out, { start, end, aspect }) {
       .setStartTime(start)
       .setDuration(dur)
       .videoFilters(vf)
+      .audioFilters('dynaudnorm')
+      .outputOptions(['-r 30','-pix_fmt yuv420p','-c:v libx264','-preset veryfast','-crf 19'])
+      .on('end', res)
+      .on('error', rej)
+      .save(out);
+  });
+}
+
+async function renderClipNoSubtitles(src, out, { start, end, aspect }) {
+  const dur = end - start;
+  const scale = aspect === '1:1' ? 'scale=1080:1080:force_original_aspect_ratio=decrease,pad=1080:1080:(ow-iw)/2:(oh-ih)/2' :
+                                   'scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2';
+  const drawBar = `drawbox=x=0:y=ih-10:w=iw*t/${dur}:h=8:color=#F08640@0.85:t=fill`;
+
+  await new Promise((res, rej) => {
+    ffmpeg(src)
+      .setStartTime(start)
+      .setDuration(dur)
+      .videoFilters([scale, drawBar])
       .audioFilters('dynaudnorm')
       .outputOptions(['-r 30','-pix_fmt yuv420p','-c:v libx264','-preset veryfast','-crf 19'])
       .on('end', res)
